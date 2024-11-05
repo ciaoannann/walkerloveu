@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>路線規劃與座標記錄</title>
+    <meta charset="UTF-8">
+    <style>
+        #map {
+            height: 600px;
+            width: 100%;
+            display: none; /* 初始隱藏地圖 */
+        }
+        #controls {
+            margin: 10px;
+            display: none; /* 初始隱藏控制按鈕 */
+        }
+        button {
+            padding: 10px;
+            margin: 5px;
+        }
+        #verificationDialog {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px;
+            border: 2px solid #ccc;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+            z-index: 1000;
+        }
+        #overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+        }
+    </style>
+</head>
+<body>
+    <!-- 新增驗證對話框 -->
+    <div id="overlay"></div>
+    <div id="verificationDialog">
+        <h3>系統驗證</h3>
+        <div style="margin-bottom: 15px;">
+            <label for="verificationInput">驗證碼：</label>
+            <input type="text" id="verificationInput" placeholder="請輸入: 手機飛人外掛看沃克">
+        </div>
+        <div style="margin-bottom: 15px;">
+            <label for="apiKeyInput">Google Maps API Key：</label>
+            <input type="text" id="apiKeyInput" placeholder="請輸入您的 Google Maps API Key" style="width: 300px;">
+        </div>
+        <button onclick="verify()">確認</button>
+    </div>
+
+    <div id="controls">
+        <button onclick="setStart()">設置起點</button>
+        <button onclick="setEnd()">設置終點</button>
+        <button onclick="calculateRoute()">計算路線</button>
+        <button onclick="downloadCoordinates()">下載座標</button>
+    </div>
+    <div id="map"></div>
+
+    <script>
+        // 修改驗證函數
+        function verify() {
+            const verificationInput = document.getElementById('verificationInput').value;
+            const apiKey = document.getElementById('apiKeyInput').value;
+            
+            if (verificationInput !== '手機飛人外掛看沃克') {
+                alert('驗證碼錯誤，請重新輸入！');
+                return;
+            }
+            
+            if (!apiKey) {
+                alert('請輸入 Google Maps API Key！');
+                return;
+            }
+
+            // 驗證通過，載入 Google Maps API
+            const script = document.createElement('script');
+            script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=geometry`;
+            script.onload = function() {
+                document.getElementById('overlay').style.display = 'none';
+                document.getElementById('verificationDialog').style.display = 'none';
+                document.getElementById('map').style.display = 'block';
+                document.getElementById('controls').style.display = 'block';
+                initMap();
+            };
+            script.onerror = function() {
+                alert('API Key 無效或載入失敗，請檢查您的 API Key');
+            };
+            document.body.appendChild(script);
+        }
+
+        // 添加按Enter鍵也能驗證的功能
+        document.getElementById('verificationInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                verify();
+            }
+        });
+
+        let map;
+        let directionsService;
+        let directionsRenderer;
+        let startMarker;
+        let endMarker;
+        let isSettingStart = false;
+        let isSettingEnd = false;
+        let coordinates = [];
+
+        function initMap() {
+            map = new google.maps.Map(document.getElementById('map'), {
+                center: { lat: 25.0330, lng: 121.5654 }, // 台北市中心
+                zoom: 13
+            });
+
+            directionsService = new google.maps.DirectionsService();
+            directionsRenderer = new google.maps.DirectionsRenderer();
+            directionsRenderer.setMap(map);
+
+            map.addListener('click', function(e) {
+                if (isSettingStart) {
+                    if (startMarker) startMarker.setMap(null);
+                    startMarker = new google.maps.Marker({
+                        position: e.latLng,
+                        map: map,
+                        title: '起點'
+                    });
+                    isSettingStart = false;
+                } else if (isSettingEnd) {
+                    if (endMarker) endMarker.setMap(null);
+                    endMarker = new google.maps.Marker({
+                        position: e.latLng,
+                        map: map,
+                        title: '終點'
+                    });
+                    isSettingEnd = false;
+                }
+            });
+        }
+
+        function setStart() {
+            isSettingStart = true;
+            isSettingEnd = false;
+        }
+
+        function setEnd() {
+            isSettingStart = false;
+            isSettingEnd = true;
+        }
+
+        function calculateRoute() {
+            if (!startMarker || !endMarker) {
+                alert('請先設置起點和終點');
+                return;
+            }
+
+            const request = {
+                origin: startMarker.getPosition(),
+                destination: endMarker.getPosition(),
+                travelMode: 'WALKING'
+            };
+
+            directionsService.route(request, function(result, status) {
+                if (status == 'OK') {
+                    directionsRenderer.setDirections(result);
+                    coordinates = [];
+                    const route = result.routes[0].overview_path;
+                    
+                    // 計算每100公尺的點位
+                    let distance = 0;
+                    for (let i = 0; i < route.length - 1; i++) {
+                        const p1 = route[i];
+                        const p2 = route[i + 1];
+                        
+                        while (distance < google.maps.geometry.spherical.computeDistanceBetween(p1, p2)) {
+                            const fraction = distance / google.maps.geometry.spherical.computeDistanceBetween(p1, p2);
+                            const point = google.maps.geometry.spherical.interpolate(p1, p2, fraction);
+                            coordinates.push({
+                                lat: point.lat(),
+                                lng: point.lng()
+                            });
+                            distance += 100;
+                        }
+                        distance -= google.maps.geometry.spherical.computeDistanceBetween(p1, p2);
+                    }
+                }
+            });
+        }
+
+        function downloadCoordinates() {
+            if (coordinates.length === 0) {
+                alert('請先計算路線');
+                return;
+            }
+
+            const fileName = prompt('請輸入要儲存的檔案名稱：', '路線座標');
+            if (!fileName) return;
+
+            let content = '';
+            coordinates.forEach((coord) => {
+                content += `${coord.lng},${coord.lat}\n`;
+            });
+
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${fileName}.gpx`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html> 
