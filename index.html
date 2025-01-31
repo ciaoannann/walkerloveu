@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>路線規劃與座標記錄</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        #map {
+            height: 80vh;
+            width: 100%;
+            display: none;
+        }
+
+        #controls {
+            width: 100%;
+            padding: 10px;
+            box-sizing: border-box;
+            display: none;
+            background-color: #f8f9fa;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            z-index: 100;
+        }
+
+        button {
+            padding: 15px;
+            margin: 5px;
+            font-size: 16px;
+            border-radius: 5px;
+            border: none;
+            background-color: #007bff;
+            color: white;
+            width: calc(50% - 10px);
+            cursor: pointer;
+            touch-action: manipulation;
+        }
+
+        button:active {
+            background-color: #0056b3;
+        }
+
+        #verificationDialog, #searchDialog {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+            z-index: 1000;
+            width: 90%;
+            max-width: 400px;
+            box-sizing: border-box;
+        }
+
+        #searchDialog {
+            display: none;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            margin: 8px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            box-sizing: border-box;
+            font-size: 16px;
+        }
+
+        #overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            z-index: 999;
+        }
+
+        h3 {
+            margin: 0 0 15px 0;
+            color: #333;
+        }
+
+        .info-window-content {
+            padding: 10px;
+            min-width: 200px;
+        }
+
+        .info-window-content button {
+            width: 100%;
+            margin: 10px 0;
+        }
+
+        @media (max-width: 600px) {
+            button {
+                width: calc(100% - 10px);
+                margin: 5px;
+            }
+
+            #map {
+                height: calc(100vh - 280px);
+            }
+
+            #controls {
+                padding: 10px;
+                max-height: 250px;
+                overflow-y: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 新增驗證對話框 -->
+    <div id="overlay"></div>
+    <div id="verificationDialog">
+        <h3>系統驗證</h3>
+        <div style="margin-bottom: 15px;">
+            <label for="verificationInput">驗證碼：</label>
+            <input type="text" id="verificationInput" placeholder="請輸入: 手機飛人外掛看沃克">
+        </div>
+        <div style="margin-bottom: 15px;">
+            <label for="apiKeyInput">Google Maps API Key：</label>
+            <input type="text" id="apiKeyInput" placeholder="請輸入您的 Google Maps API Key" style="width: 300px;">
+        </div>
+        <button onclick="verify()">確認</button>
+    </div>
+
+    <div id="searchDialog">
+        <h3>搜尋地點</h3>
+        <div style="margin-bottom: 15px;">
+            <input type="text" id="searchInput" placeholder="請輸入地點名稱或關鍵字" style="width: 300px;">
+        </div>
+        <button onclick="performSearch()">搜尋</button>
+        <button onclick="closeSearchDialog()">取消</button>
+    </div>
+
+    <div id="controls">
+        <button onclick="setStart()">設置起點</button>
+        <button onclick="setEnd()">設置終點</button>
+        <button onclick="downloadCoordinates()">下載路徑</button>
+        <button onclick="showSearchDialog()">搜尋地點</button>
+        <button onclick="toggleGetCoordinate()">取得座標</button>
+    </div>
+    <div id="map"></div>
+
+    <script>
+        // 修改驗證函數
+        function verify() {
+            const verificationInput = document.getElementById('verificationInput').value;
+            const apiKey = document.getElementById('apiKeyInput').value;
+            
+            if (verificationInput !== '手機飛人外掛看沃克') {
+                alert('驗證碼錯誤，請重新輸入！');
+                return;
+            }
+            
+            if (!apiKey) {
+                alert('請輸入 Google Maps API Key！');
+                return;
+            }
+
+            // 驗證通過，載入 Google Maps API
+            const script = document.createElement('script');
+            script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=geometry,places`;
+            script.onload = function() {
+                document.getElementById('overlay').style.display = 'none';
+                document.getElementById('verificationDialog').style.display = 'none';
+                document.getElementById('map').style.display = 'block';
+                document.getElementById('controls').style.display = 'block';
+                initMap();
+            };
+            script.onerror = function() {
+                alert('API Key 無效或載入失敗，請檢查您的 API Key');
+            };
+            document.body.appendChild(script);
+        }
+
+        // 添加按Enter鍵也能驗證的功能
+        document.getElementById('verificationInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                verify();
+            }
+        });
+
+        let map;
+        let directionsService;
+        let directionsRenderer;
+        let startMarker;
+        let endMarker;
+        let isSettingStart = false;
+        let isSettingEnd = false;
+        let coordinates = [];
+        let currentInfoWindow = null; // 添加一個變量來追踪當前開啟的信息視窗
+        let isGettingCoordinate = false;
+        let coordinateClickListener = null;
+
+        function initMap() {
+            map = new google.maps.Map(document.getElementById('map'), {
+                center: { lat: 25.0330, lng: 121.5654 }, // 台北市中心
+                zoom: 13
+            });
+
+            directionsService = new google.maps.DirectionsService();
+            directionsRenderer = new google.maps.DirectionsRenderer();
+            directionsRenderer.setMap(map);
+
+            // 修改地圖點擊事件監聽器
+            map.addListener('click', function(e) {
+                if (isSettingStart) {
+                    if (startMarker) startMarker.setMap(null);
+                    startMarker = new google.maps.Marker({
+                        position: e.latLng,
+                        map: map,
+                        title: '起點'
+                    });
+                    // 移除 isSettingStart = false; 讓功能持續有效
+                } else if (isSettingEnd) {
+                    if (endMarker) endMarker.setMap(null);
+                    endMarker = new google.maps.Marker({
+                        position: e.latLng,
+                        map: map,
+                        title: '終點'
+                    });
+                    isSettingEnd = false;
+                    // 自動計算路線
+                    calculateRoute();
+                }
+            });
+        }
+
+        function clearRoute() {
+            // 清除路線顯示
+            if (directionsRenderer) {
+                directionsRenderer.setDirections({routes: []});
+            }
+            // 清除座標數組
+            coordinates = [];
+        }
+
+        function setStart() {
+            isSettingStart = true;
+            isSettingEnd = false;
+            // 清除現有路線
+            clearRoute();
+            // 清除終點標記
+            if (endMarker) {
+                endMarker.setMap(null);
+                endMarker = null;
+            }
+            // 清除起點標記
+            if (startMarker) {
+                startMarker.setMap(null);
+                startMarker = null;
+            }
+        }
+
+        function setEnd() {
+            isSettingStart = false;
+            isSettingEnd = true;
+            // 清除現有路線
+            clearRoute();
+
+            // 添加地圖點擊事件的一次性監聽器
+            const clickListener = map.addListener('click', function(e) {
+                if (endMarker) endMarker.setMap(null);
+                endMarker = new google.maps.Marker({
+                    position: e.latLng,
+                    map: map,
+                    title: '終點'
+                });
+                isSettingEnd = false;
+                
+                // 自動計算路線
+                calculateRoute();
+                
+                // 移除這個一次性監聽器
+                google.maps.event.removeListener(clickListener);
+            });
+        }
+
+        function calculateRoute() {
+            if (!startMarker || !endMarker) {
+                alert('請先設置起點和終點');
+                return;
+            }
+
+            const request = {
+                origin: startMarker.getPosition(),
+                destination: endMarker.getPosition(),
+                travelMode: 'WALKING'
+            };
+
+            // 隱藏原始的標記點
+            startMarker.setMap(null);
+            endMarker.setMap(null);
+
+            // 重新設置 directionsRenderer 的選項
+            directionsRenderer.setOptions({
+                suppressMarkers: false,  // 顯示 A、B 點標記
+                markerOptions: {
+                    visible: true
+                }
+            });
+
+            directionsService.route(request, function(result, status) {
+                if (status == 'OK') {
+                    directionsRenderer.setDirections(result);
+                    coordinates = [];
+                    const route = result.routes[0].overview_path;
+                    
+                    // 計算每100公尺的點位
+                    let distance = 0;
+                    for (let i = 0; i < route.length - 1; i++) {
+                        const p1 = route[i];
+                        const p2 = route[i + 1];
+                        
+                        while (distance < google.maps.geometry.spherical.computeDistanceBetween(p1, p2)) {
+                            const fraction = distance / google.maps.geometry.spherical.computeDistanceBetween(p1, p2);
+                            const point = google.maps.geometry.spherical.interpolate(p1, p2, fraction);
+                            coordinates.push({
+                                lat: point.lat(),
+                                lng: point.lng()
+                            });
+                            distance += 100;
+                        }
+                        distance -= google.maps.geometry.spherical.computeDistanceBetween(p1, p2);
+                    }
+                }
+            });
+        }
+
+        function downloadCoordinates() {
+            if (coordinates.length === 0) {
+                alert('請先計算路線');
+                return;
+            }
+
+            const fileName = prompt('請輸入要儲存的檔案名稱：', '路線座標');
+            if (!fileName) return;
+
+            // 創建 GPX 格式的內容
+            let content = '<?xml version="1.0" encoding="UTF-8" ?>\n<gpx>\n';
+            content += '    <WalkersData speed="677.0" link="Walkerloveu" loop="0">\n';
+            content += '        <rights>Walkerloveu</rights>\n';
+            content += '    </WalkersData>\n';
+
+            // 添加每個座標點
+            coordinates.forEach((coord, index) => {
+                content += `    <wpt lat="${coord.lat}" lon="${coord.lng}">\n`;
+                content += `        <name>WP${index + 1}</name>\n`;
+                content += '    </wpt>\n';
+            });
+
+            content += '</gpx>';
+
+            // 創建並下載文件
+            const blob = new Blob([content], { type: 'application/gpx+xml' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${fileName}.gpx`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+        }
+
+        // 添加新的搜尋相關函數
+        function showSearchDialog() {
+            document.getElementById('searchDialog').style.display = 'block';
+            document.getElementById('overlay').style.display = 'block';
+        }
+
+        function closeSearchDialog() {
+            document.getElementById('searchDialog').style.display = 'none';
+            document.getElementById('overlay').style.display = 'none';
+        }
+
+        function performSearch() {
+            const searchInput = document.getElementById('searchInput').value;
+            if (!searchInput) {
+                alert('請輸入搜尋內容！');
+                return;
+            }
+
+            const geocoder = new google.maps.Geocoder();
+            geocoder.geocode({ address: searchInput }, function(results, status) {
+                if (status === 'OK') {
+                    const location = results[0].geometry.location;
+                    const lat = location.lat();
+                    const lng = location.lng();
+                    
+                    if (currentInfoWindow) {
+                        currentInfoWindow.close();
+                    }
+
+                    const marker = new google.maps.Marker({
+                        position: location,
+                        map: map,
+                        title: searchInput
+                    });
+
+                    // 更新信息視窗內容，改為 緯度,經度 的格式
+                    const contentString = `
+                        <div class="info-window-content">
+                            <h3 style="margin: 0 0 10px 0;">搜尋結果</h3>
+                            <p style="margin: 5px 0;"><strong>地址：</strong>${results[0].formatted_address}</p>
+                            <p style="margin: 5px 0;"><strong>座標：</strong>${lat},${lng}</p>
+                            <button onclick="copyToClipboard('${lat},${lng}')">
+                                複製座標
+                            </button>
+                        </div>
+                    `;
+
+                    // 創建信息視窗
+                    const infoWindow = new google.maps.InfoWindow({
+                        content: contentString
+                    });
+
+                    // 保存當前信息視窗的引用
+                    currentInfoWindow = infoWindow;
+
+                    // 開啟信息視窗
+                    infoWindow.open(map, marker);
+
+                    // 將地圖中心移動到搜尋結果位置
+                    map.setCenter(location);
+                    map.setZoom(15);
+                    
+                    // 關閉搜尋對話框
+                    closeSearchDialog();
+
+                    // 為標記添加點擊事件，再次點擊時開啟信息視窗
+                    marker.addListener('click', function() {
+                        if (currentInfoWindow) {
+                            currentInfoWindow.close();
+                        }
+                        infoWindow.open(map, marker);
+                        currentInfoWindow = infoWindow;
+                    });
+                } else {
+                    alert('搜尋失敗：' + status);
+                }
+            });
+        }
+
+        // 添加複製到剪貼簿的函數
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(function() {
+                alert('座標已複製到剪貼簿！');
+            }).catch(function(err) {
+                alert('複製失敗：' + err);
+            });
+        }
+
+        // 為搜尋輸入框添加 Enter 鍵監聽
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+
+        // 修改 toggleGetCoordinate 函數
+        function toggleGetCoordinate() {
+            isGettingCoordinate = true;
+            
+            // 更新按鈕狀態為持續啟用
+            const button = document.querySelector('button:last-child');
+            button.style.backgroundColor = '#ffcccc';
+            
+            // 關閉其他模式
+            isSettingStart = false;
+            isSettingEnd = false;
+
+            // 添加點擊監聽器（如果還沒有的話）
+            if (!coordinateClickListener) {
+                coordinateClickListener = map.addListener('click', function(e) {
+                    const lat = e.latLng.lat();
+                    const lng = e.latLng.lng();
+
+                    if (currentInfoWindow) {
+                        currentInfoWindow.close();
+                    }
+
+                    const marker = new google.maps.Marker({
+                        position: e.latLng,
+                        map: map,
+                        title: '座標點'
+                    });
+
+                    // 更新信息視窗內容，改為 緯度,經度 的格式
+                    const contentString = `
+                        <div class="info-window-content">
+                            <h3 style="margin: 0 0 10px 0;">座標資訊</h3>
+                            <p style="margin: 5px 0;"><strong>座標：</strong>${lat},${lng}</p>
+                            <button onclick="copyToClipboard('${lat},${lng}')">
+                                複製座標
+                            </button>
+                        </div>
+                    `;
+
+                    // 創建信息視窗
+                    const infoWindow = new google.maps.InfoWindow({
+                        content: contentString
+                    });
+
+                    // 保存當前信息視窗的引用
+                    currentInfoWindow = infoWindow;
+
+                    // 開啟信息視窗
+                    infoWindow.open(map, marker);
+
+                    // 為標記添加點擊事件，再次點擊時開啟信息視窗
+                    marker.addListener('click', function() {
+                        if (currentInfoWindow) {
+                            currentInfoWindow.close();
+                        }
+                        infoWindow.open(map, marker);
+                        currentInfoWindow = infoWindow;
+                    });
+                });
+            }
+        }
+    </script>
+</body>
+</html> 
